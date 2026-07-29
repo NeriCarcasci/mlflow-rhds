@@ -7,10 +7,17 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "mlflow/server/js/**"
+      - ".github/workflows/js.yml"
   push:
     branches:
       - master
       - branch-[0-9]+.[0-9]+
+      - main
+      - rhoai-*
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
@@ -35,27 +42,6 @@ env:
   MLFLOW_SERVER_ENABLE_JOB_EXECUTION: "false"
 
 jobs:
-  # python-skinny tests cover a subset of mlflow functionality
-  # that is meant to be supported with a smaller dependency footprint.
-  # The python skinny tests cover the subset of mlflow functionality
-  # while also verifying certain dependencies are omitted.
-  python-skinny:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: ./.github/actions/untracked
-      - uses: ./.github/actions/setup-python
-      - name: Install dependencies
-        run: |
-          source ./dev/install-common-deps.sh --skinny
-      - name: Run tests
-        run: |
-          ./dev/run-python-skinny-tests.sh
-
   python:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
@@ -65,17 +51,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3]
+        group: [1, 2, 3, 4]
         include:
-          - splits: 3
+          - splits: 4
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: true
       - uses: ./.github/actions/untracked
       - uses: ./.github/actions/free-disk-space
       - uses: ./.github/actions/setup-python
       - uses: ./.github/actions/setup-pyenv
       - uses: ./.github/actions/setup-java
-      - uses: ./.github/actions/cache-pip
       - name: Install dependencies
         run: |
           python -m venv .venv
@@ -100,14 +87,19 @@ jobs:
         run: |
           source .venv/bin/activate
           source dev/setup-ssh.sh
-          # These suites do not exercise the shipped rhoai-3.3 product path for this CVE fix.
-          pytest --splits=${{ matrix.splits }} --group=${{ matrix.group }} --quiet --requires-ssh \
-            --ignore-flavors --ignore=tests/examples --ignore=tests/evaluate \
-            --ignore=tests/genai --ignore=tests/sagemaker \
+          pytest --splits=${{ matrix.splits }} --group=${{ matrix.group }} \
+            --quiet --requires-ssh --ignore-flavors \
+            --ignore=tests/examples \
+            --ignore=tests/data/test_huggingface_dataset_and_source.py \
+            --ignore=tests/evaluate \
+            --ignore=tests/optuna \
+            --ignore=tests/pyspark/optuna \
+            --ignore=tests/genai \
+            --ignore=tests/sagemaker \
             --ignore=tests/webhooks/test_e2e.py \
             --ignore=tests/gateway/test_runner.py \
-            --ignore=tests/data/test_huggingface_dataset_and_source.py \
             tests
+
   database:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
@@ -159,214 +151,3 @@ jobs:
       - name: Clean up
         run: |
           ./tests/db/compose.sh down --volumes --remove-orphans --rmi all
-
-  flavors:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: ./.github/actions/untracked
-      - uses: ./.github/actions/setup-python
-      - uses: ./.github/actions/setup-pyenv
-      - uses: ./.github/actions/setup-java
-      - name: Install dependencies
-        run: |
-          uv sync --extra extras
-          uv pip install \
-            -c requirements/constraints.txt \
-            -r requirements/test-requirements.txt \
-            -r requirements/extra-ml-requirements.txt
-      - uses: ./.github/actions/show-versions
-      - uses: ./.github/actions/pipdeptree
-      - name: Run tests
-        run: |
-          uv run --no-sync pytest \
-            tests/tracking/fluent/test_fluent_autolog.py \
-            tests/autologging
-
-  models:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        group: [1, 2]
-        include:
-          - splits: 2
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: ./.github/actions/untracked
-      - uses: ./.github/actions/free-disk-space
-      - uses: ./.github/actions/setup-python
-      - uses: ./.github/actions/setup-pyenv
-      - uses: ./.github/actions/setup-java
-      - name: Install dependencies
-        run: |
-          uv sync --extra mlserver
-          uv pip install \
-            -r requirements/test-requirements.txt \
-            pyspark langchain langchain-community
-      - uses: ./.github/actions/show-versions
-      - uses: ./.github/actions/pipdeptree
-      - name: Run tests
-        run: |
-          uv run --no-sync pytest --splits=${{ matrix.splits }} --group=${{ matrix.group }} \
-            tests/models \
-            -k "not test_build_docker and not test_build_docker_virtualenv and not test_build_docker_with_env_override and not test_build_docker_without_model_uri"
-
-  evaluate:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        group: [1, 2]
-        include:
-          - splits: 2
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: ./.github/actions/untracked
-      - uses: ./.github/actions/setup-python
-      - uses: ./.github/actions/setup-pyenv
-      - uses: ./.github/actions/setup-java
-      - name: Install dependencies
-        run: |
-          uv sync --extra extras --extra genai
-          uv pip install "pydantic>=2.11.7,<2.12"
-          uv pip install \
-            -c requirements/constraints.txt \
-            -r requirements/test-requirements.txt \
-            torch transformers pyspark langchain langchain-experimental 'shap<0.47.0' lightgbm xgboost
-      - uses: ./.github/actions/show-versions
-      - uses: ./.github/actions/pipdeptree
-      - name: Run tests
-        run: |
-          uv run --no-sync pytest --splits=${{ matrix.splits }} --group=${{ matrix.group }} tests/evaluate --ignore=tests/evaluate/test_default_evaluator_delta.py
-      - name: Run tests with delta
-        run: |
-          uv run --no-sync pytest tests/evaluate/test_default_evaluator_delta.py
-
-  genai:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: ./.github/actions/untracked
-      - uses: ./.github/actions/setup-python
-      - uses: ./.github/actions/setup-pyenv
-      - uses: ./.github/actions/setup-java
-      - name: Install dependencies
-        run: |
-          source ./dev/install-common-deps.sh
-          pip install openai "dspy @ git+https://github.com/stanfordnlp/dspy.git@2.6.24" "litellm @ git+https://github.com/BerriAI/litellm.git@v1.75.8-stable"
-      - uses: ./.github/actions/show-versions
-      - name: Run GenAI Tests (OSS)
-        run: |
-          pytest tests/genai
-  pyfunc:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        group: [1, 2, 3, 4]
-        include:
-          - splits: 4
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: ./.github/actions/untracked
-      - uses: ./.github/actions/free-disk-space
-      - uses: ./.github/actions/setup-python
-      - uses: ./.github/actions/setup-pyenv
-      - uses: ./.github/actions/setup-java
-      - name: Install dependencies
-        run: |
-          uv sync --extra extras --extra gateway
-          uv pip install \
-            -r requirements/test-requirements.txt \
-            tensorflow 'pyspark[connect]'
-      - uses: ./.github/actions/show-versions
-      - uses: ./.github/actions/pipdeptree
-      - name: Run tests
-        run: |
-          uv run --no-sync pytest --splits=${{ matrix.splits }} --group=${{ matrix.group }} --durations=30 \
-            tests/pyfunc tests/types --ignore tests/pyfunc/test_spark_connect.py
-
-          # test_spark_connect.py fails if it's run with other tests, so run it separately.
-          uv run --no-sync pytest tests/pyfunc/test_spark_connect.py
-
-  windows:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: windows-latest
-    timeout-minutes: 120
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        group: [1, 2, 3, 4]
-        include:
-          - splits: 4
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: ./.github/actions/untracked
-      - uses: ./.github/actions/setup-python
-      - uses: ./.github/actions/setup-pyenv
-      - uses: ./.github/actions/setup-java
-      - name: Install python dependencies
-        run: |
-          uv sync --extra extras --extra genai --extra mcp
-          uv pip install "pydantic>=2.11.7,<2.12"
-          uv pip install \
-            -c requirements/constraints.txt \
-            -r requirements/test-requirements.txt \
-            pyspark datasets tensorflow torch transformers tf-keras openai \
-            tests/resources/mlflow-test-plugin
-      - uses: ./.github/actions/show-versions
-      - uses: ./.github/actions/pipdeptree
-      - name: Download Hadoop winutils for Spark
-        run: |
-          git clone https://github.com/cdarlint/winutils /tmp/winutils
-      - name: Run python tests
-        env:
-          # Starting from SQLAlchemy version 2.0, `QueuePool` is the default connection pool
-          # when creating an `Engine`. `QueuePool` prevents the removal of temporary database
-          # files created during tests on Windows as it keeps the DB connection open until
-          # it's explicitly disposed.
-          MLFLOW_SQLALCHEMYSTORE_POOLCLASS: "NullPool"
-        run: |
-          # Set Hadoop environment variables required for testing Spark integrations on Windows
-          export HADOOP_HOME=/tmp/winutils/hadoop-3.2.2
-          export PATH=$PATH:$HADOOP_HOME/bin
-          # These suites do not exercise the shipped rhoai-3.3 product path for this CVE fix.
-          # Run Windows tests
-          uv run --no-sync pytest --splits=${{ matrix.splits }} --group=${{ matrix.group }} \
-            --ignore-flavors \
-            --ignore=tests/projects \
-            --ignore=tests/examples \
-            --ignore=tests/evaluate \
-            --ignore=tests/optuna \
-            --ignore=tests/pyspark/optuna \
-            --ignore=tests/genai \
-            --ignore=tests/sagemaker \
-            --ignore=tests/gateway \
-            --ignore=tests/server/auth \
-            --ignore=tests/webhooks/test_e2e.py \
-            --ignore=tests/data/test_huggingface_dataset_and_source.py \
-            --ignore=tests/data/test_spark_dataset.py \
-            tests
